@@ -117,6 +117,12 @@ jobs:
           ls -l release
           echo "--- checksums ---"
           cat release/SHA256SUMS
+          # surface the checksums as a check annotation: they stay readable from
+          # the UI and from the API without downloading the job log
+          {
+            echo "assets ready for ${GITHUB_REF_NAME:-manual}:"
+            cat release/SHA256SUMS
+          } | sed 's/$/%0A/' | tr -d '\n' | sed 's/^/::notice::/' 
 
       - name: Publish
         env:
