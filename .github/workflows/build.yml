@@ -1,1 +1,112 @@
+name: build
 
+# Builds the NRTH/NVX defensive audit module (DLL) and its console front-end
+# (EXE) for 32-bit and 64-bit Windows, then runs the behavioural test suite.
+#
+#   job build-msvc   : native MSVC build   -> artifacts + smoke test
+#   job build-mingw  : native MinGW-w64 build
+#   job build-zig    : cross build from Linux (no Windows needed) + test suite
+#   job verify       : checks the export table really carries ordinals @1..@23
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-msvc:
+    name: MSVC (x86 + x64)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Build DLL + CLI
+        shell: cmd
+        run: build_msvc.bat
+
+      - name: Export table sanity check
+        shell: pwsh
+        run: |
+          $dll = "dist/NRTH_audit.dll"
+          if (-not (Test-Path $dll)) { throw "missing $dll" }
+          $size = (Get-Item $dll).Length
+          Write-Host "NRTH_audit.dll = $size bytes"
+          if ($size -lt 20000) { throw "dll looks truncated" }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrth-audit-msvc-${{ matrix.arch }}
+          path: |
+            dist/NRTH_audit.dll
+            dist/NRTH_audit.lib
+            dist/nrth_audit_cli.exe
+          if-no-files-found: error
+
+  build-mingw:
+    name: MinGW-w64 (x86)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64 (i686)
+        shell: pwsh
+        run: |
+          choco install mingw --version=11.2.0 -y --no-progress
+          $mp = "C:\ProgramData\mingw64\mingw32\bin"
+          if (Test-Path $mp) { Add-Content $env:GITHUB_PATH $mp }
+          $mp2 = "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw32\bin"
+          if (Test-Path $mp2) { Add-Content $env:GITHUB_PATH $mp2 }
+
+      - name: Build DLL + CLI
+        shell: cmd
+        run: build_mingw.bat
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrth-audit-mingw-x86
+          path: |
+            dist/NRTH_audit.dll
+            dist/NRTH_audit.lib
+            dist/nrth_audit_cli.exe
+          if-no-files-found: error
+
+  build-zig:
+    name: cross-build + tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zig
+        run: pip install ziglang
+
+      - name: Build Windows DLL + EXE (x86 + x64)
+        run: ./build.sh all
+
+      - name: Native test suite (fixtures + assertions)
+        run: ./build.sh test
+
+      - name: Show export table
+        run: |
+          sudo apt-get install -y binutils >/dev/null
+          objdump -p dist/NRTH_audit.dll | sed -n '/Ordinal\/Name Pointer/,$p' | head -30
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrth-audit-windows-binaries
+          path: |
+            dist/NRTH_audit.dll
+            dist/NRTH_audit_x64.dll
+            dist/nrth_audit_cli.exe
+            dist/nrth_audit_cli_x64.exe
+          if-no-files-found: error

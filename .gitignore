@@ -1,0 +1,11 @@
+# build output / scratch
+build/
+dist/linux/
+dist/*.pdb
+dist/*.exp
+*.obj
+*.o
+*.exp
+# stray linker by-products when the import library is not redirected
+/nrth_audit.lib
+/nrth_audit.exp
