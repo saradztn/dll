@@ -57,27 +57,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW-w64 (i686)
+      - name: Install MinGW-w64
+        shell: pwsh
+        run: choco install mingw -y --no-progress
+
+      - name: Locate the 32-bit toolchain and put it on PATH
         shell: pwsh
         run: |
-          choco install mingw --version=11.2.0 -y --no-progress
-          $mp = "C:\ProgramData\mingw64\mingw32\bin"
-          if (Test-Path $mp) { Add-Content $env:GITHUB_PATH $mp }
-          $mp2 = "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw32\bin"
-          if (Test-Path $mp2) { Add-Content $env:GITHUB_PATH $mp2 }
+          # The Chocolatey layout differs between package revisions, so search
+          # for the compiler instead of guessing one path. Prefer i686 (32-bit,
+          # the architecture the original module used), fall back to x86_64.
+          $roots = @("C:\ProgramData\mingw64", "C:\ProgramData\chocolatey",
+                     "C:\tools", "C:\mingw64", "C:\mingw32", "C:\msys64")
+          foreach ($name in @("i686-w64-mingw32-g++.exe", "x86_64-w64-mingw32-g++.exe", "g++.exe")) {
+            foreach ($root in $roots) {
+              if (-not (Test-Path $root)) { continue }
+              $hit = Get-ChildItem -Path $root -Filter $name -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1
+              if ($hit) {
+                Write-Host "found $name -> $($hit.FullName)"
+                Add-Content $env:GITHUB_PATH $hit.DirectoryName
+                Add-Content $env:GITHUB_ENV "MINGW_CXX=$($hit.FullName)"
+                exit 0
+              }
+            }
+          }
+          throw "no MinGW-w64 g++ found"
 
       - name: Build DLL + CLI
         shell: cmd
-        run: build_mingw.bat
+        run: build_mingw.bat "%MINGW_CXX%"
+
+      - name: Export table sanity check
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem dist/NRTH_audit*.dll | Select-Object -First 1
+          if (-not $dll) { throw "no DLL produced" }
+          Write-Host "$($dll.Name) = $($dll.Length) bytes"
+          if ($dll.Length -lt 20000) { throw "dll looks truncated" }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nrth-audit-mingw-x86
+          name: nrth-audit-mingw
+          # names carry an _x64 suffix when only a 64-bit compiler was found
           path: |
-            dist/NRTH_audit.dll
-            dist/NRTH_audit.lib
-            dist/nrth_audit_cli.exe
+            dist/NRTH_audit*.dll
+            dist/NRTH_audit*.lib
+            dist/nrth_audit_cli*.exe
           if-no-files-found: error
 
   build-zig:
