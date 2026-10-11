@@ -186,6 +186,9 @@ def main():
         sections.append((".data", build_data(patterns)))
     img = build_pe(sections)
 
+    outdir = os.path.dirname(os.path.abspath(args.out))
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     with open(args.out, "wb") as f:
         f.write(img)
 
