@@ -64,6 +64,42 @@ jobs:
             dist/nrth_audit_cli.exe
           if-no-files-found: error
 
+  verify-committed:
+    name: run the committed binaries (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The artifacts committed under dist/ are built by the cross-build job on
+      # Linux, so nothing has ever executed them. This job proves they load and
+      # run on a real Windows host (both architectures, plus a ctypes load).
+      - name: Run the committed 32-bit front-end
+        shell: cmd
+        run: |
+          dist\nrth_audit_cli.exe version
+          dist\nrth_audit_cli.exe selftest
+          if errorlevel 1 exit /b 1
+
+      - name: Run the committed 64-bit front-end
+        shell: cmd
+        run: |
+          dist\nrth_audit_cli_x64.exe version
+          dist\nrth_audit_cli_x64.exe selftest
+          if errorlevel 1 exit /b 1
+
+      - name: Audit a fixture with the committed 32-bit front-end
+        shell: cmd
+        run: |
+          python tools\make_test_image.py build\ci\suspect.dll --kill 3 --kill 16 --detour 11
+          dist\nrth_audit_cli.exe batch build\ci
+          if errorlevel 2 exit /b 1
+
+      - name: Load the committed 64-bit DLL through the ctypes binding
+        shell: pwsh
+        run: |
+          python tools/audit_with_dll.py --dll dist/NRTH_audit_x64.dll sigs
+          python tools/audit_with_dll.py --dll dist/NRTH_audit_x64.dll selftest
+
   build-mingw:
     name: MinGW-w64 (i686)
     runs-on: windows-latest
