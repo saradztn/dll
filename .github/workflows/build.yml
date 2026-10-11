@@ -1,1 +1,206 @@
+name: build
 
+# Builds the NRTH/NVX defensive audit module (DLL) and its console front-end
+# (EXE) for 32-bit and 64-bit Windows, then runs the behavioural test suite.
+#
+#   job build-msvc   : native MSVC build   -> artifacts + smoke test
+#   job build-mingw  : native MinGW-w64 build
+#   job build-zig    : cross build from Linux (no Windows needed) + test suite
+#   job verify       : checks the export table really carries ordinals @1..@23
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-msvc:
+    name: MSVC (x86 + x64)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up the MSVC toolchain
+        shell: pwsh
+        run: |
+          # vswhere ships with every Visual Studio installation; this replaces
+          # the third-party msvc-dev-cmd action (which still targets Node 20).
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere not found - is Visual Studio installed?" }
+          $inst = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $inst) { throw "no Visual Studio C++ toolset found" }
+          $vcvars = Join-Path $inst "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          Write-Host "Visual Studio: $inst"
+          Add-Content $env:GITHUB_ENV "VCVARS=$vcvars"
+
+      - name: Build DLL + CLI
+        shell: cmd
+        run: |
+          call "%VCVARS%" ${{ matrix.arch }}
+          if errorlevel 1 exit /b 1
+          call build_msvc.bat
+
+      - name: Export table sanity check
+        shell: pwsh
+        run: |
+          $dll = "dist/NRTH_audit.dll"
+          if (-not (Test-Path $dll)) { throw "missing $dll" }
+          $size = (Get-Item $dll).Length
+          Write-Host "NRTH_audit.dll = $size bytes"
+          if ($size -lt 20000) { throw "dll looks truncated" }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nrth-audit-msvc-${{ matrix.arch }}
+          path: |
+            dist/NRTH_audit.dll
+            dist/NRTH_audit.lib
+            dist/nrth_audit_cli.exe
+          if-no-files-found: error
+
+  verify-committed:
+    name: run the committed binaries (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The artifacts committed under dist/ are built by the cross-build job on
+      # Linux, so nothing has ever executed them. This job proves they load and
+      # run on a real Windows host (both architectures, plus a ctypes load).
+      - name: Run the committed 32-bit front-end
+        shell: cmd
+        run: |
+          dist\nrth_audit_cli.exe version
+          dist\nrth_audit_cli.exe selftest
+          if errorlevel 1 exit /b 1
+
+      - name: Run the committed 64-bit front-end
+        shell: cmd
+        run: |
+          dist\nrth_audit_cli_x64.exe version
+          dist\nrth_audit_cli_x64.exe selftest
+          if errorlevel 1 exit /b 1
+
+      - name: Triage a fixture with the committed 32-bit front-end
+        shell: pwsh
+        run: |
+          # Any failure is re-emitted as a check annotation carrying the captured
+          # output, so the cause is readable without the job log.
+          $log = New-Object System.Collections.Generic.List[string]
+          try {
+            $gen = & python tools/make_test_image.py build/ci/suspect.dll --kill 3 --kill 16 --detour 11 2>&1 | Out-String
+            $log.Add($gen); Write-Host $gen
+            if ($LASTEXITCODE -ne 0) { throw "fixture generation failed (exit $LASTEXITCODE)" }
+
+            $out = & dist/nrth_audit_cli.exe batch build/ci 2>&1 | Out-String
+            $rc  = $LASTEXITCODE
+            $log.Add($out); Write-Host $out
+            # exit 1 means "findings", which is exactly what the fixture encodes
+            if ($rc -ne 1) { throw "expected exit 1 (findings), got $rc" }
+            if ($out -notmatch 'SUSPECT') { throw "batch output lacks SUSPECT" }
+            if ($out -notmatch '3,11,16') { throw "batch output lacks the patched target ids" }
+            Write-Host "[*] the committed 32-bit EXE flagged the patched fixture correctly"
+            # the runner appends `exit $LASTEXITCODE` to pwsh steps, so a
+            # deliberate non-zero exit from the tool must be reset here
+            exit 0
+          } catch {
+            $tail = (($log -join "`n" -split "`r?`n" | Where-Object { $_ -match '\S' } |
+                      Select-Object -Last 20) -join '%0A')
+            Write-Host "::error::$($_.Exception.Message)%0A$tail"
+            exit 1
+          }
+
+      - name: Load the committed 64-bit DLL through the ctypes binding
+        shell: pwsh
+        run: |
+          python tools/audit_with_dll.py --dll dist/NRTH_audit_x64.dll sigs
+          python tools/audit_with_dll.py --dll dist/NRTH_audit_x64.dll selftest
+
+  build-mingw:
+    name: MinGW-w64 (i686)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the i686 toolchain (MSYS2)
+        shell: pwsh
+        run: |
+          # The runner image ships MSYS2; installing the mingw-w64 i686 package
+          # gives a deterministic compiler path. (The Chocolatey "mingw"
+          # package layout varies between revisions, which is why it is not
+          # used here.) MSYS2's own /usr/bin/g++ is deliberately NOT used: it
+          # builds POSIX binaries that need msys-2.0.dll.
+          & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed mingw-w64-i686-gcc"
+          $cxx = "C:\msys64\mingw32\bin\i686-w64-mingw32-g++.exe"
+          if (-not (Test-Path $cxx)) { throw "i686 MinGW toolchain not installed" }
+          & $cxx --version | Select-Object -First 1
+          Add-Content $env:GITHUB_ENV "MINGW_CXX=$cxx"
+
+      - name: Build DLL + CLI
+        shell: pwsh
+        run: |
+          # Capture the build output: on failure the tail is surfaced as a
+          # check annotation, which makes CI failures readable from the API.
+          $out = & .\build_mingw.bat $env:MINGW_CXX 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (($out -split "`r?`n" | Where-Object { $_ -match '\S' } |
+                      Select-Object -Last 15) -join '%0A')
+            Write-Host "::error::MinGW build failed%0A$tail"
+            exit 1
+          }
+
+      - name: Export table sanity check
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem dist/NRTH_audit*.dll | Select-Object -First 1
+          if (-not $dll) { throw "no DLL produced" }
+          Write-Host "$($dll.Name) = $($dll.Length) bytes"
+          if ($dll.Length -lt 20000) { throw "dll looks truncated" }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nrth-audit-mingw
+          path: |
+            dist/NRTH_audit*.dll
+            dist/NRTH_audit*.lib
+            dist/nrth_audit_cli*.exe
+          if-no-files-found: error
+
+  build-zig:
+    name: cross-build + tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install zig
+        run: pip install ziglang
+
+      - name: Build Windows DLL + EXE (x86 + x64)
+        run: ./build.sh all
+
+      - name: Native test suite (fixtures + assertions)
+        run: ./build.sh test
+
+      - name: Show export table
+        run: |
+          sudo apt-get install -y binutils >/dev/null
+          objdump -p dist/NRTH_audit.dll | sed -n '/Ordinal\/Name Pointer/,$p' | head -30
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nrth-audit-windows-binaries
+          path: |
+            dist/NRTH_audit.dll
+            dist/NRTH_audit_x64.dll
+            dist/nrth_audit_cli.exe
+            dist/nrth_audit_cli_x64.exe
+          if-no-files-found: error
