@@ -20,6 +20,15 @@
 
 #include <stdint.h>
 
+/* Build/link flavours (pick exactly one, per translation unit):
+     NRTH_AUDIT_BUILD   - compiling the module itself (__declspec(dllexport))
+     NRTH_AUDIT_STATIC  - the module's source is linked INTO your binary, or
+                          you link the DLL's import library and want plain
+                          symbols (no dllimport indirection)
+     (neither)          - default: consume the DLL (__declspec(dllimport))
+   Toolchains that resolve symbols themselves (GNU ld) require the static
+   flavour when the module is linked in directly; MSVC happens to tolerate the
+   mismatch by emitting a local import thunk, but do not rely on that. */
 #ifdef _WIN32
 #  if defined(NRTH_AUDIT_BUILD)
 #    define NRTH_AUDIT_API __declspec(dllexport)

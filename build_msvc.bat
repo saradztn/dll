@@ -34,7 +34,9 @@ cl /nologo /O2 /W3 /EHsc /MT /DNRTH_AUDIT_STATIC /D_CRT_SECURE_NO_WARNINGS ^
 if errorlevel 1 goto :fail
 
 echo === nrth_audit_cli.exe ===
-cl /nologo /O2 /W3 /MT /D_CRT_SECURE_NO_WARNINGS ^
+REM /DNRTH_AUDIT_STATIC: the front-end links the module into the executable,
+REM so the API must not be declared dllimport.
+cl /nologo /O2 /W3 /MT /DNRTH_AUDIT_STATIC /D_CRT_SECURE_NO_WARNINGS ^
    tools\nrth_audit_cli.c nrth_audit.cpp /Fo:build\msvc\ /Fe:dist\nrth_audit_cli.exe
 if errorlevel 1 goto :fail
 

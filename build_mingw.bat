@@ -58,7 +58,10 @@ if errorlevel 1 goto :fail
 
 echo.
 echo === nrth_audit_cli%SUFFIX%.exe ===
-"%CXX%" -O2 -s -static -static-libgcc -static-libstdc++ ^
+REM -DNRTH_AUDIT_STATIC is required: the front-end links the module's source
+REM into the executable, so the API must not be declared dllimport (GNU ld
+REM resolves plain symbols only; it does not create MSVC-style import thunks).
+"%CXX%" -O2 -s -static -DNRTH_AUDIT_STATIC -static-libgcc -static-libstdc++ ^
       -o dist\nrth_audit_cli%SUFFIX%.exe tools\nrth_audit_cli.c nrth_audit.cpp
 if errorlevel 1 goto :fail
 
