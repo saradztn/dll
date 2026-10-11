@@ -106,6 +106,9 @@ jobs:
             if ($out -notmatch 'SUSPECT') { throw "batch output lacks SUSPECT" }
             if ($out -notmatch '3,11,16') { throw "batch output lacks the patched target ids" }
             Write-Host "[*] the committed 32-bit EXE flagged the patched fixture correctly"
+            # the runner appends `exit $LASTEXITCODE` to pwsh steps, so a
+            # deliberate non-zero exit from the tool must be reset here
+            exit 0
           } catch {
             $tail = (($log -join "`n" -split "`r?`n" | Where-Object { $_ -match '\S' } |
                       Select-Object -Last 20) -join '%0A')
