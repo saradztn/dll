@@ -24,13 +24,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch }}
+      - name: Set up the MSVC toolchain
+        shell: pwsh
+        run: |
+          # vswhere ships with every Visual Studio installation; this replaces
+          # the third-party msvc-dev-cmd action (which still targets Node 20).
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere not found - is Visual Studio installed?" }
+          $inst = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $inst) { throw "no Visual Studio C++ toolset found" }
+          $vcvars = Join-Path $inst "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          Write-Host "Visual Studio: $inst"
+          Add-Content $env:GITHUB_ENV "VCVARS=$vcvars"
 
       - name: Build DLL + CLI
         shell: cmd
-        run: build_msvc.bat
+        run: |
+          call "%VCVARS%" ${{ matrix.arch }}
+          if errorlevel 1 exit /b 1
+          call build_msvc.bat
 
       - name: Export table sanity check
         shell: pwsh

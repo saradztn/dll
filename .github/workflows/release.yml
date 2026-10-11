@@ -4,6 +4,9 @@ name: release
 # CRT) and publishes them as a GitHub release.
 #
 #   - tag push  (v1.2.3)      -> builds and publishes a release named after the tag
+#                                (a tag containing "dryrun", e.g. v0.0.0-dryrun,
+#                                 builds and checksums but never publishes - handy
+#                                 for verifying the pipeline without side effects)
 #   - manual run              -> dry run by default: builds, runs the test suite
 #                                and prints the checksums, but publishes nothing.
 #                                Set dry_run=false and give a tag to publish.
@@ -39,13 +42,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch }}
+      - name: Set up the MSVC toolchain
+        shell: pwsh
+        run: |
+          # vswhere ships with every Visual Studio installation; this replaces
+          # the third-party msvc-dev-cmd action (which still targets Node 20).
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere not found - is Visual Studio installed?" }
+          $inst = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $inst) { throw "no Visual Studio C++ toolset found" }
+          $vcvars = Join-Path $inst "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          Write-Host "Visual Studio: $inst"
+          Add-Content $env:GITHUB_ENV "VCVARS=$vcvars"
 
       - name: Build DLL + CLI
         shell: cmd
-        run: build_msvc.bat
+        run: |
+          call "%VCVARS%" ${{ matrix.arch }}
+          if errorlevel 1 exit /b 1
+          call build_msvc.bat
 
       - name: Upload binaries
         uses: actions/upload-artifact@v7
@@ -121,6 +137,9 @@ jobs:
           if [ -z "${TAG}" ]; then
             echo "[!] no tag: push a v* tag or set the 'tag' input"; exit 1
           fi
+          case "${TAG}" in
+            *dryrun*) echo "[*] dry-run tag ${TAG} - assets built and checksummed, nothing published"; exit 0 ;;
+          esac
           gh release create "$TAG" \
              --title "NRTH audit $TAG" \
              --generate-notes \
