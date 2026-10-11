@@ -28,10 +28,17 @@
 #  else
 #    define NRTH_AUDIT_API __declspec(dllimport)
 #  endif
-#  define NRTH_AUDIT_C extern "C"
 #else
 #  define NRTH_AUDIT_API
+#endif
+
+/* C linkage marker: the module is callable from plain C, so the marker must
+   vanish when this header is consumed by a C compiler (MSVC/clang/gcc all
+   reject `extern "C"` in C translation units). */
+#ifdef __cplusplus
 #  define NRTH_AUDIT_C extern "C"
+#else
+#  define NRTH_AUDIT_C
 #endif
 
 #define NRTH_AUDIT_VERSION "1.2.0"
