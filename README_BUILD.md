@@ -174,6 +174,18 @@ definitions) so the export table — names **and** ordinals — comes solely fro
 `nrth_audit.def`, matching the documented contract. `build.sh` verifies the
 23 exports after every link.
 
+### Two flavours of the binaries
+
+| Where | Toolchain | Runtime | Notes |
+|---|---|---|---|
+| `dist/` (in the repository) | zig/clang cross-build | UCRT, shipped with Windows 10/11 | reproducible from Linux, verified to run on Windows by CI (`run the committed binaries` job) |
+| Release assets (`.github/workflows/release.yml`) | MSVC `/MT` | none — statically linked CRT | self-contained single files, no runtime requirement at all |
+
+Both are the same module and behave identically; pick the release assets if you
+want a single file with no runtime dependency, or `dist/` if you prefer exactly
+what the repository's own build produced. `SHA256SUMS` is published with every
+release.
+
 ### Manual smoke tests
 
 ```bat
