@@ -1,0 +1,7 @@
+; NRTH.dll export definition (MinGW / MSVC compatible)
+LIBRARY NRTH
+EXPORTS
+    NVXHookProc=NVXHookProc@12 @1
+    NVX_ExecuteGameLua @2
+    NVX_HasGameLuaVM @3
+    NVX_SetClientModule @4

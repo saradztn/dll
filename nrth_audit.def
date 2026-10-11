@@ -1,0 +1,25 @@
+LIBRARY NRTH_audit
+EXPORTS
+    NrthAuditVersion           @1
+    NrthSigCount               @2
+    NrthSigAt                  @3
+    NrthPrologueStateName      @4
+    NrthPrologueIsTamper       @5
+    NrthXorTransform           @6
+    NrthXorCrack               @7
+    NrthXorDecodeRecordAt      @8
+    NrthPatCompile             @9
+    NrthPatScan                @10
+    NrthPatWidenHead           @11
+    NrthPatPatchHead           @12
+    NrthClassifyPrologue       @13
+    NrthPeMap                  @14
+    NrthPeSectionData          @15
+    NrthPeRvaToPtr             @16
+    NrthPeTextRva              @17
+    NrthAuditImage             @18
+    NrthAuditImageFile         @19
+    NrthFindHiddenSignatures   @20
+    NrthAuditSelfTest          @21
+    NrthAuditDiff              @22
+    NrthAuditDiffFiles         @23
