@@ -52,41 +52,38 @@ jobs:
           if-no-files-found: error
 
   build-mingw:
-    name: MinGW-w64 (x86)
+    name: MinGW-w64 (i686)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW-w64
-        shell: pwsh
-        run: choco install mingw -y --no-progress
-
-      - name: Locate the 32-bit toolchain and put it on PATH
+      - name: Install the i686 toolchain (MSYS2)
         shell: pwsh
         run: |
-          # The Chocolatey layout differs between package revisions, so search
-          # for the compiler instead of guessing one path. Prefer i686 (32-bit,
-          # the architecture the original module used), fall back to x86_64.
-          $roots = @("C:\ProgramData\mingw64", "C:\ProgramData\chocolatey",
-                     "C:\tools", "C:\mingw64", "C:\mingw32", "C:\msys64")
-          foreach ($name in @("i686-w64-mingw32-g++.exe", "x86_64-w64-mingw32-g++.exe", "g++.exe")) {
-            foreach ($root in $roots) {
-              if (-not (Test-Path $root)) { continue }
-              $hit = Get-ChildItem -Path $root -Filter $name -Recurse -ErrorAction SilentlyContinue |
-                     Select-Object -First 1
-              if ($hit) {
-                Write-Host "found $name -> $($hit.FullName)"
-                Add-Content $env:GITHUB_PATH $hit.DirectoryName
-                Add-Content $env:GITHUB_ENV "MINGW_CXX=$($hit.FullName)"
-                exit 0
-              }
-            }
-          }
-          throw "no MinGW-w64 g++ found"
+          # The runner image ships MSYS2; installing the mingw-w64 i686 package
+          # gives a deterministic compiler path. (The Chocolatey "mingw"
+          # package layout varies between revisions, which is why it is not
+          # used here.) MSYS2's own /usr/bin/g++ is deliberately NOT used: it
+          # builds POSIX binaries that need msys-2.0.dll.
+          & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed mingw-w64-i686-gcc"
+          $cxx = "C:\msys64\mingw32\bin\i686-w64-mingw32-g++.exe"
+          if (-not (Test-Path $cxx)) { throw "i686 MinGW toolchain not installed" }
+          & $cxx --version | Select-Object -First 1
+          Add-Content $env:GITHUB_ENV "MINGW_CXX=$cxx"
 
       - name: Build DLL + CLI
-        shell: cmd
-        run: build_mingw.bat "%MINGW_CXX%"
+        shell: pwsh
+        run: |
+          # Capture the build output: on failure the tail is surfaced as a
+          # check annotation, which makes CI failures readable from the API.
+          $out = & .\build_mingw.bat $env:MINGW_CXX 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (($out -split "`r?`n" | Where-Object { $_ -match '\S' } |
+                      Select-Object -Last 15) -join '%0A')
+            Write-Host "::error::MinGW build failed%0A$tail"
+            exit 1
+          }
 
       - name: Export table sanity check
         shell: pwsh
@@ -100,7 +97,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nrth-audit-mingw
-          # names carry an _x64 suffix when only a 64-bit compiler was found
           path: |
             dist/NRTH_audit*.dll
             dist/NRTH_audit*.lib

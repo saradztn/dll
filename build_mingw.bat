@@ -74,32 +74,37 @@ exit /b 0
 
 :fail
 echo.
-echo [!] build failed.
+echo [!] build failed with compiler: %CXX%
+echo     try:  build_mingw.bat C:\path\to\i686-w64-mingw32-g++.exe
 exit /b 1
 
 REM ---------------------------------------------------------------- helpers --
 :detect_compiler
+REM NOTE: a POSIX g++ shipped by MSYS2/Cygwin lives in ...\usr\bin and produces
+REM binaries that need msys-2.0.dll - those must never be picked here, so any
+REM candidate under \usr\bin is rejected.
 for %%N in (i686-w64-mingw32-g++ x86_64-w64-mingw32-g++ mingw32-g++ g++) do (
     for /f "delims=" %%W in ('where %%N 2^>nul') do (
-        if not defined CXX set "CXX=%%W"
+        echo %%W | findstr /i "\\usr\\bin" >nul || if not defined CXX set "CXX=%%W"
     )
     if defined CXX goto :eof
 )
 REM not on PATH - probe the usual install roots
 for %%R in (
+    "C:\msys64\mingw32"
+    "C:\msys64\mingw64"
     "C:\ProgramData\mingw64"
     "C:\ProgramData\chocolatey"
     "C:\tools"
     "C:\mingw64"
     "C:\mingw32"
-    "C:\msys64"
     "C:\Program Files\mingw64"
     "%USERPROFILE%\scoop\apps"
 ) do (
     if exist %%R (
         for %%N in (i686-w64-mingw32-g++.exe x86_64-w64-mingw32-g++.exe mingw32-g++.exe g++.exe) do (
             for /f "delims=" %%F in ('dir /b /s "%%~R\%%N" 2^>nul') do (
-                if not defined CXX set "CXX=%%F"
+                echo %%F | findstr /i "\\usr\\bin" >nul || if not defined CXX set "CXX=%%F"
             )
         )
     )

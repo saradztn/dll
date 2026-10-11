@@ -110,7 +110,7 @@ LoadLibraryA) و**وحدة غش** تعمل داخل MTA:SA، تركّب خطاف
 |---|---|
 | `dist/NRTH_audit.dll` | 32-bit (PE32/x86) module — the architecture the original used; exports all 23 entry points with ordinals `@1..@23` exactly as declared in `nrth_audit.def` |
 | `dist/NRTH_audit_x64.dll` | Same module, 64-bit |
-| `dist/NRTH_audit.lib`, `NRTH_audit_x64.lib` | Import libraries for C/C++ callers |
+| `dist/NRTH_audit.lib`, `NRTH_audit_x64.lib` | Import libraries for C/C++ callers (GNU-format archives produced by the zig/MinGW build — perfect for MinGW/clang; if you link from MSVC, build with `build_msvc.bat` to get an MSVC-format `.lib`) |
 | `dist/nrth_audit_cli.exe` | 32-bit console front-end (the EXE) |
 | `dist/nrth_audit_cli_x64.exe` | Same front-end, 64-bit |
 
