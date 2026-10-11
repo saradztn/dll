@@ -1,0 +1,127 @@
+name: release
+
+# Builds the Windows artifacts with MSVC (self-contained, statically linked
+# CRT) and publishes them as a GitHub release.
+#
+#   - tag push  (v1.2.3)      -> builds and publishes a release named after the tag
+#   - manual run              -> dry run by default: builds, runs the test suite
+#                                and prints the checksums, but publishes nothing.
+#                                Set dry_run=false and give a tag to publish.
+#
+# The binaries are the read-only audit module (DLL) and its console front-end
+# (EXE) only - see README_BUILD.md for what is intentionally not built.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "dry run: build + checksum only, do not publish a release"
+        type: boolean
+        default: true
+      tag:
+        description: "release tag to publish when dry_run is false (e.g. v1.0.0)"
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  msvc:
+    name: MSVC ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Build DLL + CLI
+        shell: cmd
+        run: build_msvc.bat
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: msvc-${{ matrix.arch }}
+          path: |
+            dist/NRTH_audit.dll
+            dist/NRTH_audit.lib
+            dist/nrth_audit_cli.exe
+          if-no-files-found: error
+
+  verify:
+    name: cross-build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install zig
+        run: pip install ziglang
+
+      - name: Cross-build the Windows DLL + EXE (x86 + x64)
+        run: ./build.sh all
+
+      - name: Behavioural test suite
+        run: ./build.sh test
+
+  publish:
+    name: publish release
+    needs: [msvc, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the MSVC binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # unambiguous asset names: architecture is part of the file name
+          cp artifacts/msvc-x86/NRTH_audit.dll     release/NRTH_audit_x86.dll
+          cp artifacts/msvc-x86/NRTH_audit.lib     release/NRTH_audit_x86.lib
+          cp artifacts/msvc-x86/nrth_audit_cli.exe release/nrth_audit_cli_x86.exe
+          cp artifacts/msvc-x64/NRTH_audit.dll     release/NRTH_audit_x64.dll
+          cp artifacts/msvc-x64/NRTH_audit.lib     release/NRTH_audit_x64.lib
+          cp artifacts/msvc-x64/nrth_audit_cli.exe release/nrth_audit_cli_x64.exe
+          cp README_BUILD.md                       release/README_BUILD.md
+          ( cd release && find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS )
+          echo "--- assets ---"
+          ls -l release
+          echo "--- checksums ---"
+          cat release/SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "[*] dry run - no release created. Artifacts above are the ones that would be published."
+            exit 0
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${INPUT_TAG}"
+          fi
+          if [ -z "${TAG}" ]; then
+            echo "[!] no tag: push a v* tag or set the 'tag' input"; exit 1
+          fi
+          gh release create "$TAG" \
+             --title "NRTH audit $TAG" \
+             --generate-notes \
+             release/*

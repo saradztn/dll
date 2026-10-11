@@ -22,7 +22,7 @@ jobs:
       matrix:
         arch: [x86, x64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -42,7 +42,7 @@ jobs:
           if ($size -lt 20000) { throw "dll looks truncated" }
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nrth-audit-msvc-${{ matrix.arch }}
           path: |
@@ -55,7 +55,7 @@ jobs:
     name: MinGW-w64 (i686)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the i686 toolchain (MSYS2)
         shell: pwsh
@@ -94,7 +94,7 @@ jobs:
           if ($dll.Length -lt 20000) { throw "dll looks truncated" }
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nrth-audit-mingw
           path: |
@@ -107,7 +107,7 @@ jobs:
     name: cross-build + tests (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install zig
         run: pip install ziglang
@@ -124,7 +124,7 @@ jobs:
           objdump -p dist/NRTH_audit.dll | sed -n '/Ordinal\/Name Pointer/,$p' | head -30
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nrth-audit-windows-binaries
           path: |
