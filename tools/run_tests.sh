@@ -14,7 +14,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLI="${1:-$ROOT/dist/linux/nrth_audit_cli}"
+CLI_ARG="${1:-}"
+CLI="${CLI_ARG:-$ROOT/build/nrth_audit_cli_linux}"
 WORK="$ROOT/build/test"
 PASS=0
 FAIL=0
@@ -47,9 +48,11 @@ PY
 }
 
 # --- build ------------------------------------------------------------------
-if [ ! -x "$CLI" ]; then
-    say "[*] building native CLI"
-    mkdir -p "$ROOT/dist/linux"
+# Always rebuild from the current sources unless the caller hands us a binary,
+# so the suite can never silently test a stale artifact.
+if [ -z "$CLI_ARG" ]; then
+    say "[*] building native CLI from source -> $CLI"
+    mkdir -p "$ROOT/build"
     if command -v g++ >/dev/null 2>&1; then
         g++ -O2 -Wall -Wextra -o "$CLI" "$ROOT/tools/nrth_audit_cli.c" "$ROOT/nrth_audit.cpp" || exit 1
     else
@@ -57,6 +60,8 @@ if [ ! -x "$CLI" ]; then
         [ -n "$ZIG" ] || { say "[!] need g++ or zig"; exit 1; }
         "$ZIG" c++ -O2 -o "$CLI" "$ROOT/tools/nrth_audit_cli.c" "$ROOT/nrth_audit.cpp" || exit 1
     fi
+elif [ ! -x "$CLI" ]; then
+    say "[!] $CLI is not executable"; exit 1
 fi
 
 mkdir -p "$WORK"
@@ -126,6 +131,22 @@ json_ok "audit --json is valid JSON" "$WORK/audit.json"
 json_ok "diff --json is valid JSON" "$WORK/diff.json"
 "$CLI" hidden "$WORK/clean.dll" --json > "$WORK/hidden.json" 2>/dev/null
 json_ok "hidden --json is valid JSON" "$WORK/hidden.json"
+
+say ""
+say "[9] batch triage + report files"
+mkdir -p "$WORK/cleanonly"
+cp "$WORK/clean.dll" "$WORK/nohidden.dll" "$WORK/cleanonly/"
+check "batch on a mixed folder -> exit 1"  1 "SUSPECT"  "$CLI" batch "$WORK"
+check "batch names the patched targets"    1 "3,11,16"  "$CLI" batch "$WORK"
+check "batch counts modules"               1 "3 module(s)" "$CLI" batch "$WORK"
+check "batch on clean folder -> exit 0"    0 "verdict: CLEAN" "$CLI" batch "$WORK/cleanonly"
+check "batch rejects an empty folder"      2 "-"         "$CLI" batch "$WORK/does-not-exist"
+"$CLI" batch "$WORK" --json > "$WORK/batch.json" 2>/dev/null
+json_ok "batch --json is valid JSON" "$WORK/batch.json"
+check "--out writes an audit report"       1 "-"         "$CLI" audit "$WORK/suspect.dll" --out "$WORK/report.txt"
+[ -s "$WORK/report.txt" ] && grep -q "verdict: SUSPECT" "$WORK/report.txt" \
+    && ok "--out report contains the verdict" || bad "--out report content"
+check "--out: unwritable path -> exit 2"   2 "-"         "$CLI" audit "$WORK/clean.dll" --out /nonexistent-dir/x.txt
 
 say ""
 say "-------------------------------------------------------------"

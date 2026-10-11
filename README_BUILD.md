@@ -38,15 +38,20 @@ nrth_audit_cli.exe audit  client.dll.copy --json
 :: 4) مقارنة نسخة موثوقة بنسخة مشبوهة (يكشف التعديلات الجديدة)
 nrth_audit_cli.exe diff   clean\client.dll  suspect\client.dll
 
-:: 5) استخراج البصمات المخفية (المشفّرة بـ XOR موقعي)
+:: 5) مسح مجلد كامل (تثبيت اللعبة) وإخراج جدول بالوحدات المشبوهة
+nrth_audit_cli.exe batch  "C:\Program Files (x86)\MTA San Andreas\mods\deathmatch"
+nrth_audit_cli.exe batch  .\modules --json --out triage.json
+
+:: 6) استخراج البصمات المخفية (المشفّرة بـ XOR موقعي)
 nrth_audit_cli.exe hidden client.dll.copy
 
-:: 6) أدوات أولية
+:: 7) أدوات أولية
 nrth_audit_cli.exe prologue "C3 90 90 90"
 nrth_audit_cli.exe xor      "b0 b8 bc b3 b9 ac f7 be b7 b0"
 ```
 
 أكواد الخروج: `0` نظيف، `1` وُجدت مؤشرات تعديل، `2` خطأ استخدام/قراءة، `3` فشل الفحص الذاتي.
+والخيار `--out FILE` يكتب نسخة من التقرير إلى ملف (نصًّا أو JSON حسب الوسائط) ليبقى أثر للمراجعة.
 
 ### البناء
 
@@ -123,12 +128,20 @@ protection, never write to the analysed file and never touch the network.
 | `pe <image>` | PE header + section map |
 | `audit <image> [--json]` | locate every catalogue target, classify each prologue, verdict CLEAN / SUSPECT / INCONCLUSIVE |
 | `diff <clean> <suspect> [--json] [--all]` | flag functions that *newly* carry a detour/kill prologue |
+| `batch <dir> [--json] [--all]` | triage a whole install: audits every `*.dll`/`*.exe`/`*.ocx`/`*.sys` in a directory and prints one verdict line per module |
 | `hidden <image> [minLen] [--json]` | recover positional-XOR encoded signature strings from `.data`/`.rdata` |
 | `scan <image> <pattern>...` | raw byte-pattern search (`?` / `??` wildcards) |
 | `prologue <hexbytes>` | classify one prologue (`C3` kill, `E9 rel32` detour, `FF 25` far jump, `68 .. C3` push/ret, `C7 05` stub, padding ...) |
 | `xor <hexbytes>` | brute-force the positional-XOR codec of one record |
 
 Exit codes: `0` clean, `1` findings, `2` usage/IO error, `3` self-test failure.
+`--out FILE` mirrors the whole report (text or `--json`) into a file, so a triage
+run can be archived or attached to a ticket:
+
+```bat
+nrth_audit_cli.exe batch "<MTA install>\mods\deathmatch" --json --out triage.json
+nrth_audit_cli.exe diff  clean\client.dll suspect\client.dll --out diff.txt
+```
 
 ### Verdict semantics
 
@@ -171,7 +184,7 @@ nrth_audit_cli.exe diff   <clean copy> <suspect copy>
 
 `build.sh test` additionally generates synthetic PE fixtures (nothing but the
 published pattern bytes, plus two `C3` kills, one `E9` detour and three
-XOR-obfuscated records) and asserts all 32 expected outcomes, including the
+XOR-obfuscated records) and asserts all 41 expected outcomes, including the
 exit codes and the JSON schema.
 
 ### Calling the DLL from your own code

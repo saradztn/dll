@@ -28,8 +28,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
-#define CLI_VERSION "1.2.0"
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#  define CLI_STRIEQ _stricmp
+#else
+#  include <dirent.h>
+#  include <strings.h>
+#  define CLI_STRIEQ strcasecmp
+#endif
+
+#define CLI_VERSION "1.3.0"
 
 #define CLI_EXIT_OK       0
 #define CLI_EXIT_FINDINGS 1
@@ -37,6 +48,38 @@
 #define CLI_EXIT_SELFTEST 3
 
 #define CLI_MAX_IMAGE (64u * 1024u * 1024u)
+
+
+/* ------------------------------------------------------------------------- */
+/* output layer: everything below can be mirrored into a report file (--out) */
+/* ------------------------------------------------------------------------- */
+static FILE *g_tee = NULL;
+
+static void TEEF(const char *fmt, ...)
+{
+    char buf[8192];
+    va_list ap;
+    int n;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    fputs(buf, stdout);
+    if (g_tee) fputs(buf, g_tee);
+}
+
+#define printf TEEF
+
+static int cli_tee_open(const char *path)
+{
+    g_tee = fopen(path, "wb");
+    return g_tee != NULL;
+}
+
+static void cli_tee_close(void)
+{
+    if (g_tee) { fclose(g_tee); g_tee = NULL; }
+}
 
 /* ------------------------------------------------------------------------- */
 /* small helpers                                                             */
@@ -109,21 +152,21 @@ static int32_t cli_parse_hex(const char *s, uint8_t *out, uint32_t cap)
 
 static void cli_json_str(const char *s)
 {
-    putchar('"');
+    TEEF("%c", '"');
     for (; s && *s; ++s) {
         unsigned char c = (unsigned char)*s;
         switch (c) {
-        case '"':  fputs("\\\"", stdout); break;
-        case '\\': fputs("\\\\", stdout); break;
-        case '\n': fputs("\\n", stdout);  break;
-        case '\r': fputs("\\r", stdout);  break;
-        case '\t': fputs("\\t", stdout);  break;
+        case '"':  TEEF("%s", "\\\""); break;
+        case '\\': TEEF("%s", "\\\\"); break;
+        case '\n': TEEF("%s", "\\n");  break;
+        case '\r': TEEF("%s", "\\r");  break;
+        case '\t': TEEF("%s", "\\t");  break;
         default:
-            if (c < 0x20) printf("\\u%04x", c);
-            else putchar((int)c);
+            if (c < 0x20) TEEF("\\u%04x", c);
+            else TEEF("%c", (int)c);
         }
     }
-    putchar('"');
+    TEEF("%c", '"');
 }
 
 static const char *cli_verdict(uint32_t fullHits, uint32_t patchedHits)
@@ -168,6 +211,8 @@ static void cli_usage(FILE *fp)
         "                                      compare a trusted copy against a\n"
         "                                      suspect one; alert on new patching\n"
         "                                      (--all also lists unchanged targets)\n"
+        "  batch <dir> [--json] [--all]        audit every *.dll/*.exe/.sys in a\n"
+        "                                      directory (triage a whole install)\n"
         "  hidden <image> [minLen] [--json]    recover XOR-obfuscated signature\n"
         "                                      strings embedded in .data/.rdata\n"
         "  scan <image> <pattern> [pattern..]  raw byte-pattern search (wildcards\n"
@@ -176,6 +221,7 @@ static void cli_usage(FILE *fp)
         "  xor <hexbytes>                      crack a positional-XOR record\n"
         "\n"
         "exit codes: 0 clean  1 findings  2 usage/IO error  3 self-test failure\n"
+        "options:    --out FILE   also write the report to FILE\n"
         "notes:      <image> = a module copy or memory dump you already own.\n"
         "            Nothing is ever written to the analysed file.\n",
         fp);
@@ -196,7 +242,7 @@ static int cli_cmd_selftest(int argc, char **argv)
 
     report[0] = '\0';
     failed = NrthAuditSelfTest(report, (uint32_t)sizeof(report));
-    fputs(report, stdout);
+    TEEF("%s", report);
 
     if (outPath) {
         FILE *f = fopen(outPath, "wb");
@@ -497,7 +543,7 @@ static int cli_cmd_hidden(const char *path, uint32_t minLen, int json)
         if (found <= 0) {
             printf("no positional-XOR encoded signature strings found\n");
         } else {
-            fputs(text, stdout);
+            TEEF("%s", text);
             printf("\n%u encoded record(s) recovered; first VA entries: ", (unsigned)found);
             for (i = 0; i < (uint32_t)found && i < 8; ++i) printf("0x%06X ", (unsigned)vas[i]);
             printf("\n");
@@ -505,6 +551,175 @@ static int cli_cmd_hidden(const char *path, uint32_t minLen, int json)
     }
     free(text); free(vas); cli_free(buf);
     return flagged ? CLI_EXIT_FINDINGS : CLI_EXIT_OK;
+}
+
+
+/* ------------------------------------------------------------------------- */
+/* batch triage: audit every module in a directory                           */
+/* ------------------------------------------------------------------------- */
+#define CLI_MAX_FILES 256
+
+typedef struct { char name[260]; } CliEntry;
+
+static int cli_mod_ext(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    if (!dot) return 0;
+    return CLI_STRIEQ(dot, ".dll") == 0 || CLI_STRIEQ(dot, ".exe") == 0 ||
+           CLI_STRIEQ(dot, ".ocx") == 0 || CLI_STRIEQ(dot, ".sys") == 0;
+}
+
+static int cli_collect(const char *dir, CliEntry *out, int max)
+{
+    int n = 0;
+#ifdef _WIN32
+    static const char *exts[] = { "*.dll", "*.exe", "*.ocx", "*.sys" };
+    size_t e;
+    for (e = 0; e < sizeof(exts) / sizeof(exts[0]); ++e) {
+        char pat[300];
+        WIN32_FIND_DATAA fd;
+        HANDLE h;
+        snprintf(pat, sizeof(pat), "%s\\%s", dir, exts[e]);
+        h = FindFirstFileA(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (n >= max) break;
+            snprintf(out[n].name, sizeof(out[n].name), "%s", fd.cFileName);
+            ++n;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    if (!d) return 0;
+    while ((de = readdir(d)) != NULL && n < max) {
+        if (de->d_name[0] == '.') continue;
+        if (!cli_mod_ext(de->d_name)) continue;
+        snprintf(out[n].name, sizeof(out[n].name), "%s", de->d_name);
+        ++n;
+    }
+    closedir(d);
+#endif
+    if (n > 1) {
+        int i, j;
+        for (i = 1; i < n; ++i) {          /* insertion sort, keeps output stable */
+            CliEntry key = out[i];
+            for (j = i - 1; j >= 0 && strcmp(out[j].name, key.name) > 0; --j) out[j + 1] = out[j];
+            out[j + 1] = key;
+        }
+    }
+    return n;
+}
+
+static long cli_file_size(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long sz = -1;
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) == 0) sz = ftell(f);
+    fclose(f);
+    return sz;
+}
+
+static int cli_cmd_batch(const char *dir, int json, int showAll)
+{
+    CliEntry *files = (CliEntry *)calloc(CLI_MAX_FILES, sizeof(CliEntry));
+    uint32_t nSig = NrthSigCount();
+    NrthSigFinding *f = (NrthSigFinding *)calloc(nSig ? nSig : 1, sizeof(NrthSigFinding));
+    int count, i, suspect = 0, clean = 0, unreadable = 0, first = 1;
+
+    if (!files || !f) {
+        free(files); free(f);
+        fprintf(stderr, "[!] out of memory\n");
+        return CLI_EXIT_USAGE;
+    }
+    count = cli_collect(dir, files, CLI_MAX_FILES);
+    if (count <= 0) {
+        fprintf(stderr, "[!] no *.dll/*.exe/.sys modules found in '%s'\n", dir);
+        free(files); free(f);
+        return CLI_EXIT_USAGE;
+    }
+
+    if (json) {
+        printf("{\n  \"tool\": \"nrth_audit_cli\",\n  \"command\": \"batch\",\n  \"dir\": ");
+        cli_json_str(dir);
+        printf(",\n  \"modules\": [\n");
+    } else {
+        printf("batch audit - %s (%d candidate module(s))\n", dir, count);
+        printf("%-32s %-10s %-7s %-9s %-12s %s\n",
+               "module", "size", "intact", "tampered", "not-located", "verdict");
+    }
+
+    for (i = 0; i < count; ++i) {
+        char path[560];
+        long sz;
+        int32_t rc, tam = 0, intact = 0, missing = 0, k;
+        char ids[128];
+        size_t idlen = 0;
+        ids[0] = '\0';
+
+        snprintf(path, sizeof(path), "%s/%s", dir, files[i].name);
+        sz = cli_file_size(path);
+        memset(f, 0, sizeof(NrthSigFinding) * (nSig ? nSig : 1));
+        rc = NrthAuditImageFile(path, f, nSig);
+        if (rc < 0) {
+            ++unreadable;
+            if (json) {
+                printf("    %s{ \"file\": ", first ? "" : ",\n");
+                cli_json_str(files[i].name);
+                printf(", \"error\": %d, \"verdict\": \"UNREADABLE\" }", (int)rc);
+            } else {
+                printf("%-32s %-10ld %-7s %-9s %-12s %s\n", files[i].name, -1L, "-", "-", "-", "UNREADABLE");
+            }
+            first = 0;
+            continue;
+        }
+        for (k = 0; k < (int32_t)nSig; ++k) {
+            if (f[k].patchedHits) {
+                ++tam;
+                if (idlen + 8 < sizeof(ids))
+                    idlen += (size_t)snprintf(ids + idlen, sizeof(ids) - idlen, "%s%u",
+                                              idlen ? "," : "", (unsigned)(f[k].sigId ? f[k].sigId : k + 1));
+            } else if (f[k].fullHits) ++intact;
+            else ++missing;
+        }
+        if (tam) ++suspect; else ++clean;
+
+        if (json) {
+            printf("    %s{ \"file\": ", first ? "" : ",\n");
+            cli_json_str(files[i].name);
+            printf(", \"size\": %ld, \"intact\": %d, \"tampered\": %d,"
+                   " \"notLocated\": %d, \"verdict\": ", sz, (int)intact, (int)tam, (int)missing);
+            cli_json_str(tam ? "SUSPECT" : (intact ? "CLEAN" : "INCONCLUSIVE"));
+            printf(", \"tamperedIds\": [%s] }", ids);
+        } else if (tam || showAll) {
+            printf("%-32s %-10ld %-7d %-9d %-12d %s%s%s\n", files[i].name, sz,
+                   (int)intact, (int)tam, (int)missing,
+                   tam ? "SUSPECT" : (intact ? "CLEAN" : "INCONCLUSIVE"),
+                   (tam && ids[0]) ? "  ids: " : "", ids);
+        }
+        first = 0;
+    }
+
+    if (json) {
+        if (!first) printf("\n");
+        printf("  ],\n  \"summary\": { \"modules\": %d, \"suspect\": %d, \"clean\": %d,"
+               " \"unreadable\": %d },\n  \"verdict\": ", count, suspect, clean, unreadable);
+        cli_json_str(suspect ? "SUSPECT" : "CLEAN");
+        printf("\n}\n");
+    } else {
+        printf("\nsummary: %d module(s) -> %d suspect, %d clean, %d unreadable\n",
+               count, suspect, clean, unreadable);
+        if (suspect)
+            printf("verdict: SUSPECT - %d module(s) carry a detour/kill prologue on a hooked target\n", suspect);
+        else
+            printf("verdict: CLEAN - no catalogue target found with a hook/kill prologue\n");
+    }
+    free(files);
+    free(f);
+    return suspect ? CLI_EXIT_FINDINGS : CLI_EXIT_OK;
 }
 
 static int cli_cmd_scan(const char *path, int nPat, char **pats)
@@ -604,62 +819,84 @@ static int cli_cmd_xor(const char *hex)
 int main(int argc, char **argv)
 {
     const char *cmd;
-    int json = 0, showAll = 0, i;
+    int json = 0, showAll = 0, i, rc = CLI_EXIT_USAGE;
+    const char *outPath = NULL;
 
     if (argc < 2) { cli_usage(stderr); return CLI_EXIT_USAGE; }
     cmd = argv[1];
 
-    /* --json may appear anywhere after the command for the reporting commands */
+    /* global switches may appear anywhere after the command name */
     for (i = 2; i < argc; ++i) {
         if (strcmp(argv[i], "--json") == 0) { json = 1; argv[i] = (char *)"-"; }
         else if (strcmp(argv[i], "--all") == 0) { showAll = 1; argv[i] = (char *)"-"; }
+        else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+            outPath = argv[i + 1];
+            argv[i] = (char *)"-";
+            argv[i + 1] = (char *)"-";
+            ++i;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             cli_usage(stdout);
             return CLI_EXIT_OK;
         }
     }
 
-    if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
-        cli_usage(stdout);
-        return CLI_EXIT_OK;
-    }
-    if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) return cli_cmd_version();
-    if (strcmp(cmd, "sigs") == 0)     return cli_cmd_sigs();
-    if (strcmp(cmd, "selftest") == 0) return cli_cmd_selftest(argc - 2, argv + 2);
-    if (strcmp(cmd, "pe") == 0) {
-        if (argc < 3) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        return cli_cmd_pe(argv[2]);
-    }
-    if (strcmp(cmd, "audit") == 0) {
-        if (argc < 3) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        return cli_cmd_audit(argv[2], json);
-    }
-    if (strcmp(cmd, "diff") == 0) {
-        if (argc < 4) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        return cli_cmd_diff(argv[2], argv[3], json, showAll);
-    }
-    if (strcmp(cmd, "hidden") == 0) {
-        uint32_t minLen = 12;
-        if (argc < 3) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        for (i = 3; i < argc; ++i) {
-            if (argv[i][0] >= '0' && argv[i][0] <= '9') minLen = (uint32_t)atoi(argv[i]);
-        }
-        return cli_cmd_hidden(argv[2], minLen, json);
-    }
-    if (strcmp(cmd, "scan") == 0) {
-        if (argc < 4) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        return cli_cmd_scan(argv[2], argc - 3, argv + 3);
-    }
-    if (strcmp(cmd, "prologue") == 0) {
-        if (argc < 3) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        return cli_cmd_prologue(argv[2]);
-    }
-    if (strcmp(cmd, "xor") == 0) {
-        if (argc < 3) { cli_usage(stderr); return CLI_EXIT_USAGE; }
-        return cli_cmd_xor(argv[2]);
+    if (outPath && !cli_tee_open(outPath)) {
+        fprintf(stderr, "[!] cannot write report '%s'\n", outPath);
+        return CLI_EXIT_USAGE;
     }
 
-    fprintf(stderr, "[!] unknown command '%s'\n\n", cmd);
-    cli_usage(stderr);
-    return CLI_EXIT_USAGE;
+    if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
+        cli_usage(stdout);
+        rc = CLI_EXIT_OK;
+    }
+    else if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) rc = cli_cmd_version();
+    else if (strcmp(cmd, "sigs") == 0)     rc = cli_cmd_sigs();
+    else if (strcmp(cmd, "selftest") == 0) rc = cli_cmd_selftest(argc - 2, argv + 2);
+    else if (strcmp(cmd, "pe") == 0) {
+        if (argc < 3) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_pe(argv[2]);
+    }
+    else if (strcmp(cmd, "audit") == 0) {
+        if (argc < 3) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_audit(argv[2], json);
+    }
+    else if (strcmp(cmd, "batch") == 0) {
+        if (argc < 3) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_batch(argv[2], json, showAll);
+    }
+    else if (strcmp(cmd, "diff") == 0) {
+        if (argc < 4) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_diff(argv[2], argv[3], json, showAll);
+    }
+    else if (strcmp(cmd, "hidden") == 0) {
+        uint32_t minLen = 12;
+        if (argc < 3) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else {
+            for (i = 3; i < argc; ++i) {
+                if (argv[i][0] >= '0' && argv[i][0] <= '9') minLen = (uint32_t)atoi(argv[i]);
+            }
+            rc = cli_cmd_hidden(argv[2], minLen, json);
+        }
+    }
+    else if (strcmp(cmd, "scan") == 0) {
+        if (argc < 4) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_scan(argv[2], argc - 3, argv + 3);
+    }
+    else if (strcmp(cmd, "prologue") == 0) {
+        if (argc < 3) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_prologue(argv[2]);
+    }
+    else if (strcmp(cmd, "xor") == 0) {
+        if (argc < 3) { cli_usage(stderr); rc = CLI_EXIT_USAGE; }
+        else rc = cli_cmd_xor(argv[2]);
+    }
+    else {
+        fprintf(stderr, "[!] unknown command '%s'\n\n", cmd);
+        cli_usage(stderr);
+        rc = CLI_EXIT_USAGE;
+    }
+
+    cli_tee_close();
+    return rc;
 }
